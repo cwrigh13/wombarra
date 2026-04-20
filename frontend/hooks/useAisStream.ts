@@ -4,6 +4,10 @@ import { useEffect, useRef, useState } from 'react';
 import { classifyShipType } from '@/lib/shipType';
 import type { Vessel } from '@/lib/types';
 
+type BufferedVessel = Omit<Vessel, 'kind'> & {
+  kind: Vessel['kind'] | null;
+};
+
 const AISSTREAM_URL = 'wss://stream.aisstream.io/v0/stream';
 const BOUNDING_BOX: [[number, number], [number, number]] = [
   [-34.5, 150.9],
@@ -27,7 +31,9 @@ export function useAisStream({ apiKey }: UseAisStreamOptions): {
   >('idle');
 
   // Mutable buffer: WebSocket frames mutate this, React never reads it directly.
-  const bufferRef = useRef<Map<string, Vessel>>(new Map());
+  // Entries with kind === null are position-only reports awaiting static data
+  // classification; they are skipped at flush time.
+  const bufferRef = useRef<Map<string, BufferedVessel>>(new Map());
 
   useEffect(() => {
     if (!apiKey) {
@@ -74,13 +80,19 @@ export function useAisStream({ apiKey }: UseAisStreamOptions): {
     };
 
     // 2000ms flush tick: copy buffer snapshot into React state.
+    // Only classified vessels (kind set) reach the render path.
     flushTimer = setInterval(() => {
       const buffer = bufferRef.current;
       if (buffer.size === 0) {
-        setVessels((prev) => (prev.length === 0 ? prev : prev));
+        setVessels((prev) => (prev.length === 0 ? prev : []));
         return;
       }
-      setVessels(Array.from(buffer.values()));
+      const snapshot: Vessel[] = [];
+      for (const vessel of buffer.values()) {
+        if (vessel.kind == null) continue;
+        snapshot.push(vessel as Vessel);
+      }
+      setVessels(snapshot);
     }, FLUSH_INTERVAL_MS);
 
     // Garbage collection: evict vessels whose last update exceeds 600s.
@@ -95,7 +107,12 @@ export function useAisStream({ apiKey }: UseAisStreamOptions): {
         }
       }
       if (evicted > 0) {
-        setVessels(Array.from(buffer.values()));
+        const snapshot: Vessel[] = [];
+        for (const vessel of buffer.values()) {
+          if (vessel.kind == null) continue;
+          snapshot.push(vessel as Vessel);
+        }
+        setVessels(snapshot);
       }
     }, GC_INTERVAL_MS);
 
@@ -113,7 +130,7 @@ export function useAisStream({ apiKey }: UseAisStreamOptions): {
   return { vessels, status };
 }
 
-function ingest(buffer: Map<string, Vessel>, payload: unknown): void {
+function ingest(buffer: Map<string, BufferedVessel>, payload: unknown): void {
   if (!payload || typeof payload !== 'object') return;
   const frame = payload as Record<string, unknown>;
   const messageType = frame.MessageType as string | undefined;
@@ -134,8 +151,8 @@ function ingest(buffer: Map<string, Vessel>, payload: unknown): void {
     const lon = numeric(report.Longitude);
     if (lat == null || lon == null) return;
 
-    const next: Vessel = {
-      kind: existing?.kind ?? 'cargo',
+    const next: BufferedVessel = {
+      kind: existing?.kind ?? null,
       mmsi,
       name: existing?.name ?? String(metaData.ShipName ?? 'Unknown'),
       shipType: existing?.shipType ?? null,
@@ -167,7 +184,7 @@ function ingest(buffer: Map<string, Vessel>, payload: unknown): void {
     const dest = trimString(stat.Destination) ?? 'Unknown';
     const eta = formatEta(stat.Eta);
 
-    const next: Vessel = existing
+    const next: BufferedVessel = existing
       ? {
           ...existing,
           kind: classification.kind,
