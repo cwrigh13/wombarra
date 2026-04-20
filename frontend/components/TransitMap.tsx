@@ -17,8 +17,8 @@ const COLORS = {
   train: '#10b981',
 } as const;
 
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:4000';
+// Empty string => same-origin (use the bundled Next.js API route).
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? '';
 const AIS_KEY = process.env.NEXT_PUBLIC_AISSTREAM_KEY;
 
 export default function TransitMap() {
